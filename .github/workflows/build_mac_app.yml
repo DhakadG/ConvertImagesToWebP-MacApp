@@ -1,0 +1,43 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          pip install -r ConvertImagesToWebP-MacAlpha/requirements.txt
+          pip install py2app
+
+      - name: Build .app Bundle
+        run: |
+          cd ConvertImagesToWebP-MacAlpha
+          python setup.py py2app
+
+      - name: Compress App
+        run: |
+          cd ConvertImagesToWebP-MacAlpha/dist
+          zip -r ConvertImagesToWebP-MacAlpha-v0.1.0.zip ConvertImagesToWebP.app
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacOS-App-Bundle
+          path: ConvertImagesToWebP-MacAlpha/dist/ConvertImagesToWebP-MacAlpha-v0.1.0.zip
+          retention-days: 5
