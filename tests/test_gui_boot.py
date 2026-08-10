@@ -95,6 +95,31 @@ def main() -> int:
     assert "already existed" in results.subhead.cget("text"), results.subhead.cget("text")
     print(f"  rerun ok — {results.subhead.cget('text')}")
 
+    # Drag & drop, when the optional package is installed. This regressed
+    # silently once already: tkinter.Tk is not a BaseWidget, so tkinterdnd2's
+    # methods never reached the window and the failure looked like "not
+    # installed". Feed it the brace-quoted string tkdnd actually delivers.
+    if app.dnd_enabled:
+        dropped = workspace / "My Dropped Photos"   # space in the name on purpose
+        dropped.mkdir()
+        Image.new("RGB", (300, 200), "red").save(dropped / "dropped.jpg")
+
+        class _Event:
+            data = "{" + str(dropped) + "}"
+
+        app._on_drop(_Event())          # ignored: not on the home screen
+        assert app.sources != [dropped], "a drop mid-run must not be accepted"
+
+        app.go_home()
+        pump(app, 1.0)
+        app._on_drop(_Event())
+        pump(app, 3.0)
+        assert [p.name for p in app.sources] == ["My Dropped Photos"], app.sources
+        assert home.scan and len(home.scan.files) == 1, home.scan
+        print("  drag & drop ok (path with spaces parsed)")
+    else:
+        print("  drag & drop skipped — tkinterdnd2 not installed")
+
     # Theme switching repaints without raising (the ring is a raw Canvas).
     for theme in ("Light", "Dark", "System"):
         app._set_theme(theme)

@@ -24,11 +24,20 @@ try:
 except Exception:  # optional: the app is fully usable without it
     DND_IMPORTED = False
 
+# tkinterdnd2 grafts drop_target_register/dnd_bind onto tkinter.BaseWidget, but
+# tkinter.Tk is not a BaseWidget subclass — so the root window never gets them
+# unless DnDWrapper is mixed in explicitly.
+if DND_IMPORTED:
+    class _Window(ctk.CTk, TkinterDnD.DnDWrapper):
+        pass
+else:
+    _Window = ctk.CTk
+
 IS_MAC = platform.system() == "Darwin"
 MOD = "Command" if IS_MAC else "Control"
 
 
-class App(ctk.CTk):
+class App(_Window):
     def __init__(self) -> None:
         super().__init__()
         self.settings = Settings.load()
@@ -119,7 +128,10 @@ class App(ctk.CTk):
             self.dnd_bind("<<DropEnter>>", lambda _e: self._highlight(True))
             self.dnd_bind("<<DropLeave>>", lambda _e: self._highlight(False))
             self.dnd_enabled = True
-        except Exception:
+        except Exception as exc:
+            # Print it: a silent except here hid the missing DnDWrapper mixin
+            # behind a tagline that looked like a normal "not installed" state.
+            print(f"drag & drop disabled: {type(exc).__name__}: {exc}", file=sys.stderr)
             self.tagline.configure(
                 text="Batch image conversion · drag & drop unavailable on this build")
 

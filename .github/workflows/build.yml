@@ -44,10 +44,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-13 is Intel, macos-14 is Apple Silicon. py2app bundles the
-          # running interpreter, so a single runner produces a single-arch app
-          # that simply will not launch on the other kind of Mac.
-          - runner: macos-13
+          # py2app bundles the running interpreter, so a single runner produces
+          # a single-arch app that will not launch on the other kind of Mac.
+          # macos-15-intel is the current Intel label; macos-13 was retired and
+          # a job targeting it queues forever instead of failing.
+          - runner: macos-15-intel
             arch: intel
           - runner: macos-14
             arch: apple-silicon
