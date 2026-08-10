@@ -191,9 +191,10 @@ def _save_kwargs(settings: Settings, exif: bytes | None, icc: bytes | None) -> d
             kwargs.update(lossless=True, exact=True)
     elif fmt == "avif":
         # Pillow's AVIF `speed` is inverted vs WebP's `method`: 0 is slowest.
+        # No lossless here: quality=100 is near-lossless, not lossless, and
+        # calling it "lossless" in the UI would be a lie. The panel only offers
+        # the toggle for WebP (PNG is lossless by definition).
         kwargs.update(quality=settings.quality, speed=max(0, 6 - settings.effort))
-        if settings.lossless:
-            kwargs["quality"] = 100
     elif fmt == "jpeg":
         kwargs.update(quality=settings.quality, optimize=True, progressive=True,
                       subsampling="4:4:4" if settings.quality >= 90 else "4:2:0")
@@ -208,6 +209,19 @@ def _save_kwargs(settings: Settings, exif: bytes | None, icc: bytes | None) -> d
 
 
 PIL_FORMAT = {"webp": "WEBP", "avif": "AVIF", "jpeg": "JPEG", "png": "PNG"}
+
+# Hard format ceilings. WebP's is a container limit, not a Pillow one, so a
+# large panorama or flatbed scan fails at encode time with a message that says
+# nothing useful. Check first and explain what to do about it.
+MAX_DIMENSION = {"webp": 16383, "jpeg": 65535}
+
+
+def _check_dimensions(width: int, height: int, output_format: str) -> None:
+    limit = MAX_DIMENSION.get(output_format)
+    if limit and (width > limit or height > limit):
+        raise ValueError(
+            f"{width}x{height} exceeds the {output_format.upper()} limit of "
+            f"{limit}px — set a downscale limit, or choose PNG/AVIF")
 
 
 def convert_file(source: Path, destination: Path, settings: Settings) -> Encoded:
@@ -232,6 +246,7 @@ def convert_file(source: Path, destination: Path, settings: Settings) -> Encoded
 
         img = _apply_square(img, settings)
         img = _normalize_mode(img, settings.output_format, settings)
+        _check_dimensions(img.width, img.height, settings.output_format)
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         img.save(destination, PIL_FORMAT[settings.output_format],

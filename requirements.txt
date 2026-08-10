@@ -2,7 +2,10 @@
 
 # Required
 customtkinter>=5.2.2
-Pillow>=11.3.0          # 11.3 ships native AVIF read/write
+# 11.3 first shipped native AVIF, but everything below 12.3.0 carries HIGH
+# advisories in ImageCms and crop/paste (GHSA-9hw9-ch79-4vh6,
+# GHSA-6r8x-57c9-28j4) — both of which this app calls on every image.
+Pillow>=12.3.0
 
 # Optional, each degrades gracefully if absent (see: python main.py --check)
 tkinterdnd2>=0.4.2      # drag & drop onto the window

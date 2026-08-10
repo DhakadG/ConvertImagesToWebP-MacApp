@@ -187,7 +187,13 @@ class App(_Window):
     def on_close(self) -> None:
         progress = self.screens.get("progress")
         if progress and progress.runner and not progress.runner.cancelled:
-            progress.runner.cancel()  # don't leave workers writing after the window dies
+            progress.runner.cancel()
+            # Cancelling only sets a flag; a worker mid-encode keeps writing.
+            # Give it a moment to land so we don't tear the interpreter down
+            # underneath a file write.
+            thread = getattr(progress, "thread", None)
+            if thread and thread.is_alive():
+                thread.join(timeout=5.0)
         self.settings.window_width = self.winfo_width()
         self.settings.window_height = self.winfo_height()
         self.settings.save()

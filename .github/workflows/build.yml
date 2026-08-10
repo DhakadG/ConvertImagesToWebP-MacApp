@@ -6,11 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# No job here creates releases, publishes packages, or writes via the API.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -28,6 +34,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -55,6 +63,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -79,3 +89,4 @@ jobs:
           name: WebP-Studio-macOS-${{ matrix.arch }}
           path: WebP-Studio-macOS-${{ matrix.arch }}.zip
           retention-days: 14
+

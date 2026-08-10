@@ -41,6 +41,7 @@ class HomeScreen(ctk.CTkFrame):
         self._scan_token = 0
         self._scan_results: queue.Queue = queue.Queue()
         self._scan_pending = False
+        self._dest_key: tuple = ()
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=0, minsize=PANEL_WIDTH + t.MD)
@@ -154,8 +155,14 @@ class HomeScreen(ctk.CTkFrame):
             self.set_sources([Path(p) for p in chosen])
 
     def set_sources(self, paths: list[Path]) -> None:
+        requested = len(paths)
         paths = [p for p in paths if p.exists()]
         if not paths:
+            # Silently ignoring the drop looks like the app is broken. This
+            # happens with paths from a network share or an ejected volume.
+            self._update_summary(
+                f"Could not read {requested} dropped item{'s' if requested != 1 else ''}"
+                " — moved, deleted, or on a disconnected drive?", ready=False)
             return
         self.app.sources = paths
         folder = paths[0] if paths[0].is_dir() else paths[0].parent
@@ -182,6 +189,7 @@ class HomeScreen(ctk.CTkFrame):
         self._scan_token += 1
         token = self._scan_token
         self._scan_pending = True
+        self._dest_key = self._destination_key()
         sources = list(self.app.sources)
         settings = self.app.settings
         self._update_summary("Scanning…", ready=False)
@@ -229,10 +237,20 @@ class HomeScreen(ctk.CTkFrame):
             state="normal" if ready else "disabled",
             text=f"Convert {count:,} images" if count else "Convert")
 
+    def _destination_key(self) -> tuple:
+        s = self.app.settings
+        return (s.dest_mode, s.dest_folder, s.subfolder_name)
+
     def _settings_changed(self) -> None:
         self.app.settings.save()
-        if self.app.sources:
-            self._rescan()  # destination and exclusions may have moved
+        # Only the destination settings change which files are found (the
+        # output folder is excluded from the scan). Rescanning on every change
+        # meant one background walk per pixel of quality-slider drag — brutal
+        # on a large or network folder.
+        key = self._destination_key()
+        if self.app.sources and key != self._dest_key:
+            self._dest_key = key
+            self._rescan()
 
     # -- selected-state rendering ----------------------------------------
     def _render_sources(self) -> None:

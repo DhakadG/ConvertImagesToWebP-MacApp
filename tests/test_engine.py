@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PIL import Image
 
 from core.config import Settings
-from core.imaging import _target_size, available_output_formats, convert_file
+from core.imaging import (_check_dimensions, _target_size, available_output_formats,
+                          convert_file)
 from core.runner import CONVERTED, FAILED, SKIPPED, Runner, scan_sources, common_root
 
 
@@ -202,6 +203,56 @@ def test_savings_accounting(tmp: Path):
     print(f"  savings accounting ok ({r.source_bytes} -> {r.output_bytes} bytes)")
 
 
+def test_overwrite_keeps_good_output_when_encode_fails(tmp: Path):
+    """The staging-file rename exists for this: under `overwrite`, a failed
+    encode must not destroy the working output from a previous run."""
+    root = tmp / "regress"
+    src = make_image(root / "one.png", (64, 64), "blue")
+    settings = Settings(subfolder_name="Out", on_existing="overwrite")
+
+    scan = scan_sources([root], (".png",), exclude_under=root / "Out")
+    assert Runner(scan, settings).run()[0].status == CONVERTED
+    good = root / "Out" / "one.webp"
+    original = good.read_bytes()
+
+    # Corrupt the source so the next encode raises partway through.
+    src.write_bytes(b"no longer a png")
+    results = Runner(scan_sources([root], (".png",), exclude_under=root / "Out"),
+                     settings).run()
+
+    assert results[0].status == FAILED
+    assert good.exists(), "overwrite deleted a valid output on a failed encode"
+    assert good.read_bytes() == original, "previous output was corrupted"
+    assert not list((root / "Out").glob("*.part")), "staging file left behind"
+    print("  overwrite preserves good output ok")
+
+
+def test_webp_dimension_limit(tmp: Path):
+    """WebP tops out at 16383px. Fail with something actionable, not a
+    ValueError from deep inside the encoder."""
+    settings = Settings(output_format="webp")
+    try:
+        _check_dimensions(20000, 100, "webp")
+    except ValueError as exc:
+        assert "16383" in str(exc) and "downscale" in str(exc), exc
+    else:
+        raise AssertionError("oversized WebP was not rejected")
+
+    _check_dimensions(20000, 100, "png")  # PNG has no such ceiling
+    print("  webp dimension limit ok")
+
+
+def test_format_falls_back_to_a_writable_one(tmp: Path):
+    """A preset must not select a format this Pillow build cannot encode."""
+    settings = Settings.from_dict({"output_format": "avif"})
+    assert settings.output_format in available_output_formats()
+    for name in ("Web", "Balanced", "Archive", "Smallest"):
+        s = Settings()
+        s.apply_preset(name)
+        assert s.output_format in available_output_formats(), (name, s.output_format)
+    print("  preset formats are all writable ok")
+
+
 def main() -> int:
     print(f"writable formats: {', '.join(available_output_formats())}\n")
     with tempfile.TemporaryDirectory() as raw:
@@ -218,6 +269,9 @@ def main() -> int:
         test_failure_is_isolated(tmp / "t8")
         test_cancel(tmp / "t9")
         test_savings_accounting(tmp / "t10")
+        test_overwrite_keeps_good_output_when_encode_fails(tmp / "t11")
+        test_webp_dimension_limit(tmp / "t12")
+        test_format_falls_back_to_a_writable_one(tmp / "t13")
     print("\nall engine checks passed")
     return 0
 

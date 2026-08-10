@@ -81,7 +81,7 @@ build no longer fails without one.
 
 **py2app bundles the interpreter it is run with, so the result is single-arch.**
 An app built on an M-series Mac will not launch on an Intel Mac and vice versa.
-CI therefore builds both (`macos-13` Intel, `macos-14` Apple Silicon) and
+CI therefore builds both (`macos-15-intel`, `macos-14` Apple Silicon) and
 uploads them as separate artifacts. To produce one universal binary instead,
 build with a universal2 python.org interpreter rather than a Homebrew one.
 
@@ -153,10 +153,14 @@ without a display.
 
 | | Status |
 |---|---|
-| Windows 11 · Python 3.12 · Tk 8.6 · CustomTkinter 6.0 | both test suites pass; app driven end to end |
-| Engine logic (any OS) | 12 checks, no display required |
-| macOS | **not yet run** — no Mac available to the author. Push to `main` and the CI matrix will build and smoke-test Intel and Apple Silicon bundles. |
+| Windows 11 · Python 3.12 · Tk 8.6 · CustomTkinter 6.0 (`>=5.2.2` required) | both suites pass; app driven end to end |
+| Engine logic (any OS) | 15 checks, no display required |
+| macOS 14 (Apple Silicon), CI | GUI boot + real conversion pass; `.app` builds and its interpreter starts |
+| macOS (Intel), CI | `.app` builds on `macos-15-intel` |
 | Linux | should work; `test_gui_boot` needs `xvfb` in CI |
+
+Not covered anywhere: a human double-clicking the built `.app`. CI runners have
+no window server, so that last step is yours.
 
 ## License
 

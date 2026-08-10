@@ -183,6 +183,13 @@ class ResultsScreen(ctk.CTkFrame):
             if r.message:
                 row += f"  [{r.message}]"
             lines.append(row)
-        Path(target).write_text("\n".join(lines), encoding="utf-8")
-        self.save_log_button.configure(text="Saved ✓")
-        self.after(1800, lambda: self.save_log_button.configure(text="Save log…"))
+        try:
+            Path(target).write_text("\n".join(lines), encoding="utf-8")
+        except OSError as exc:
+            # Read-only location, full disk, revoked permission — telling the
+            # user beats a traceback into a console they cannot see.
+            self.detail.append(f"\nCould not save the log: {exc}")
+            self.save_log_button.configure(text="Save failed")
+        else:
+            self.save_log_button.configure(text="Saved ✓")
+        self.after(2200, lambda: self.save_log_button.configure(text="Save log…"))

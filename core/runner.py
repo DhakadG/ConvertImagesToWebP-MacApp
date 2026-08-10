@@ -179,15 +179,18 @@ class Runner:
         dest_root = destination_root([self.scan.root], self.settings)
 
         workers = self.settings.worker_count()
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            # map() streams lazily enough that cancel takes effect quickly,
-            # and each worker reports its own completion under the lock.
-            for _ in pool.map(lambda f: self._process(f, dest_root), self.scan.files):
-                pass
-
-        elapsed = time.monotonic() - self._started
-        if self.on_finish:
-            self.on_finish(self.results, self.cancelled, elapsed)
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                # map() submits every task up front; cancelled files fall through
+                # _process cheaply rather than being withdrawn from the queue.
+                for _ in pool.map(lambda f: self._process(f, dest_root), self.scan.files):
+                    pass
+        finally:
+            # on_finish must fire even if the pool blows up — the progress
+            # screen waits on it, and without it the user is stranded there.
+            elapsed = time.monotonic() - self._started
+            if self.on_finish:
+                self.on_finish(self.results, self.cancelled, elapsed)
         return self.results
 
     def start_background(self) -> threading.Thread:
@@ -197,6 +200,18 @@ class Runner:
 
     # -- internals ------------------------------------------------------
     def _process(self, source: Path, dest_root: Path | None) -> None:
+        """Never raises. pool.map re-raises in the consuming loop, so a single
+        escaped exception would abort the batch and skip every remaining file."""
+        try:
+            self._process_one(source, dest_root)
+        except Exception as exc:
+            try:
+                self._record(FileResult(source, FAILED,
+                                        message=f"{type(exc).__name__}: {exc}"))
+            except Exception:
+                pass
+
+    def _process_one(self, source: Path, dest_root: Path | None) -> None:
         if self._cancel.is_set():
             self._record(FileResult(source, CANCELLED))
             return
@@ -214,15 +229,19 @@ class Runner:
                                     message="output already exists"))
             return
 
+        # Encode to a sidecar, then rename over the target. Two reasons:
+        # a half-written file never appears at the destination, and under the
+        # overwrite policy a failed encode can no longer destroy the perfectly
+        # good output from a previous run.
+        staging = destination.with_name(destination.name + ".part")
         try:
-            encoded = convert_file(source, destination, self.settings)
+            encoded = convert_file(source, staging, self.settings)
+            staging.replace(destination)
             output_bytes = destination.stat().st_size
             self._record(FileResult(source, CONVERTED, destination, source_bytes,
                                     output_bytes, encoded.note))
         except Exception as exc:
-            # Half-written output is worse than none — a truncated file looks
-            # valid to a file manager and fails silently later.
-            destination.unlink(missing_ok=True)
+            _discard(staging)
             self._record(FileResult(source, FAILED, source_bytes=source_bytes,
                                     message=f"{type(exc).__name__}: {exc}"))
 
@@ -286,6 +305,16 @@ class Runner:
 
 class _Skip(Exception):
     """Destination exists and the policy says leave it alone."""
+
+
+def _discard(path: Path) -> None:
+    """Delete a staging file, tolerating failure. On Windows an antivirus or
+    indexer holding the handle raises PermissionError; leaving a stray .part
+    behind is far better than losing the whole batch to it."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------

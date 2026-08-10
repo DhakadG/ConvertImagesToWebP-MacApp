@@ -101,13 +101,20 @@ class Settings:
         """Coerce every field back into a legal range. Called after load and
         before every run, so a hand-edited settings.json can't crash a batch."""
         self.output_format = _one_of(self.output_format, OUTPUT_FORMATS, "webp")
+        # OUTPUT_FORMATS is what the app knows about; writable_formats() is what
+        # this Pillow build can actually encode. A preset (or an old settings
+        # file) could otherwise select a format that fails on every file — the
+        # exact thing the capability probe exists to prevent.
+        writable = writable_formats()
+        if self.output_format not in writable:
+            self.output_format = writable[0]
         self.resize_mode = _one_of(self.resize_mode, RESIZE_MODES, "none")
         self.square_mode = _one_of(self.square_mode, SQUARE_MODES, "off")
         self.dest_mode = _one_of(self.dest_mode, DEST_MODES, "subfolder")
         self.on_existing = _one_of(self.on_existing, ON_EXISTING, "skip")
         self.theme = _one_of(self.theme, THEMES, "system")
 
-        self.quality = _clamp_int(self.quality, 1, 100, 82)
+        self.quality = _clamp_int(self.quality, 1, 100, 85)  # match the field default
         self.effort = _clamp_int(self.effort, 0, 6, 6)
         self.threads = _clamp_int(self.threads, 0, 64, 0)
         self.window_width = _clamp_int(self.window_width, 720, 4000, 940)
@@ -198,6 +205,23 @@ PRESET_HINTS = {
 
 
 # ---------------------------------------------------------------------------
+_writable: tuple[str, ...] | None = None
+
+
+def writable_formats() -> tuple[str, ...]:
+    """Formats this Pillow build can encode. Imported lazily and cached —
+    core.imaging imports this module, so a top-level import would cycle."""
+    global _writable
+    if _writable is None:
+        try:
+            from core.imaging import available_output_formats
+
+            _writable = tuple(available_output_formats()) or OUTPUT_FORMATS
+        except Exception:
+            _writable = OUTPUT_FORMATS
+    return _writable
+
+
 def _one_of(value: Any, allowed: tuple[str, ...], fallback: str) -> str:
     return value if value in allowed else fallback
 

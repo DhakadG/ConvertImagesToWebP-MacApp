@@ -363,10 +363,16 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         # meaningless when no metadata is written at all.
         _set_enabled(self.quality_row.slider, not self.settings.lossless)
         _set_enabled(self.gps_switch, self.settings.keep_metadata)
-        if self.settings.lossless and self.settings.output_format in ("jpeg",):
+
+        # Only WebP has a real lossless mode here. JPEG has none, and AVIF's
+        # quality=100 is near-lossless — offering the toggle there would have
+        # promised something the encoder does not deliver. PNG is always
+        # lossless, so the switch would be noise.
+        lossless_applies = self.settings.output_format == "webp"
+        if self.settings.lossless and not lossless_applies:
             self.lossless_switch.variable.set(False)
             self.settings.lossless = False
-        _set_enabled(self.lossless_switch, self.settings.output_format != "jpeg")
+        _set_enabled(self.lossless_switch, lossless_applies)
 
     def _reload_controls(self) -> None:
         """Push settings back into every widget (after a preset is applied)."""

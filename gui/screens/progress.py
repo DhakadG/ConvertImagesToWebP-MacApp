@@ -28,6 +28,7 @@ class ProgressScreen(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent")
         self.app = app
         self.runner: Runner | None = None
+        self.thread = None
         self.events: queue.Queue = queue.Queue()
         self._polling = False
         self._last: Progress | None = None
@@ -105,7 +106,8 @@ class ProgressScreen(ctk.CTkFrame):
             on_finish=lambda results, cancelled, elapsed:
                 self.events.put(("finish", (results, cancelled, elapsed))),
         )
-        self.runner.start_background()
+        # kept so the window can wait for it on close
+        self.thread = self.runner.start_background()
 
         if not self._polling:
             self._polling = True
