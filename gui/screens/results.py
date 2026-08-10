@@ -1,326 +1,188 @@
-"""
-Screen 4: Results - Processing summary and completion display.
+"""Results: what happened, what went wrong, and where the files went.
 
-Features:
-- Success/failure summary
-- File size savings stats
-- Processing time
-- Open output folder button
-- Convert more / Done buttons
+v1 reported "Conversion Complete!" even after a cancel, and errors were
+recorded but never shown. Both are visible here.
 """
+
+from __future__ import annotations
+
+import platform
+import subprocess
+from datetime import datetime
+from pathlib import Path
+from tkinter import filedialog
+from typing import TYPE_CHECKING
 
 import customtkinter as ctk
-from pathlib import Path
-from typing import TYPE_CHECKING, List, Dict, Any
-import subprocess
-import platform
+
+from core.runner import (CANCELLED, CONVERTED, FAILED, SKIPPED, FileResult,
+                         format_bytes, format_duration)
+from gui import theme as t
+from gui.widgets import Card, LogView, StatTile, ghost_button, primary_button
 
 if TYPE_CHECKING:
-    from gui.app import WebPConverterApp
-
-# Import config
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from core.config import config
+    from gui.app import App
 
 
 class ResultsScreen(ctk.CTkFrame):
-    """
-    Results screen - Shows processing summary after completion.
-    """
-
-    def __init__(self, parent, app: "WebPConverterApp"):
+    def __init__(self, parent, app: "App"):
         super().__init__(parent, fg_color="transparent")
         self.app = app
-        self.results: List[Dict[str, Any]] = []
-        self._setup_ui()
+        self.results: list[FileResult] = []
+        self.output_folder: Path | None = None
 
-    def _setup_ui(self):
-        """Build the UI components."""
-        # Configure grid
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
+        self._build()
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Header with Success Icon
-        # ─────────────────────────────────────────────────────────────────────
-        header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=30, pady=(40, 10))
-        header_frame.grid_columnconfigure(0, weight=1)
+    def _build(self) -> None:
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=t.XL, pady=(t.XL, t.MD))
+        head.grid_columnconfigure(0, weight=1)
+        self.headline = ctk.CTkLabel(head, text="", font=t.font(26, "bold"),
+                                     text_color=t.TEXT, anchor="w")
+        self.headline.grid(row=0, column=0, sticky="w")
+        self.subhead = ctk.CTkLabel(head, text="", font=t.font(13), text_color=t.MUTED,
+                                    anchor="w")
+        self.subhead.grid(row=1, column=0, sticky="w", pady=(2, 0))
 
-        # Success icon
-        self.status_icon = ctk.CTkLabel(
-            header_frame,
-            text="✅",
-            font=ctk.CTkFont(size=64)
-        )
-        self.status_icon.grid(row=0, column=0, pady=(0, 10))
+        tiles = ctk.CTkFrame(self, fg_color="transparent")
+        tiles.grid(row=1, column=0, sticky="ew", padx=t.XL)
+        tiles.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="tile")
+        self.tile_files = StatTile(tiles, "Images converted", "0")
+        self.tile_saved = StatTile(tiles, "Space saved", "—", t.SUCCESS)
+        # Smaller type: "1.2 GB → 240.0 MB" overflows the tile at 24pt.
+        self.tile_sizes = StatTile(tiles, "Before → after", "—", value_size=17)
+        self.tile_time = StatTile(tiles, "Took", "—")
+        for i, tile in enumerate((self.tile_files, self.tile_saved, self.tile_sizes,
+                                  self.tile_time)):
+            tile.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else t.SM, 0))
 
-        # Title
-        self.title_label = ctk.CTkLabel(
-            header_frame,
-            text="Conversion Complete!",
-            font=ctk.CTkFont(size=24, weight="bold")
-        )
-        self.title_label.grid(row=1, column=0)
+        self.detail_card = Card(self, "Details")
+        self.detail_card.grid(row=2, column=0, sticky="nsew", padx=t.XL, pady=t.MD)
+        detail_body = self.detail_card.body()
+        detail_body.grid_rowconfigure(0, weight=1)
+        self.detail = LogView(detail_body)
+        self.detail.grid(row=0, column=0, sticky="nsew")
 
-        # Subtitle
-        self.subtitle_label = ctk.CTkLabel(
-            header_frame,
-            text="All images converted successfully",
-            font=ctk.CTkFont(size=14),
-            text_color=("gray50", "gray60")
-        )
-        self.subtitle_label.grid(row=2, column=0, pady=(5, 0))
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.grid(row=3, column=0, sticky="ew", padx=t.XL, pady=(0, t.LG))
+        bar.grid_columnconfigure(0, weight=1)
+        left = ctk.CTkFrame(bar, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="w")
+        ghost_button(left, "Open output folder", self.open_output, height=42,
+                     width=170).grid(row=0, column=0, padx=(0, t.SM))
+        self.save_log_button = ghost_button(left, "Save log…", self.save_log, height=42,
+                                            width=120)
+        self.save_log_button.grid(row=0, column=1)
+        more = primary_button(bar, "Convert more", self.app.go_home, height=42)
+        more.configure(width=170)
+        more.grid(row=0, column=1, sticky="e")
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Stats Cards
-        # ─────────────────────────────────────────────────────────────────────
-        stats_frame = ctk.CTkFrame(self, fg_color="transparent")
-        stats_frame.grid(row=1, column=0, sticky="ew", padx=30, pady=30)
-        stats_frame.grid_columnconfigure((0, 1), weight=1)
+    # ------------------------------------------------------------------
+    def show(self, results: list[FileResult], cancelled: bool, elapsed: float) -> None:
+        self.results = results
+        converted = [r for r in results if r.status == CONVERTED]
+        skipped = [r for r in results if r.status == SKIPPED]
+        failed = [r for r in results if r.status == FAILED]
+        stopped = [r for r in results if r.status == CANCELLED]
 
-        # Files stat card
-        files_card = ctk.CTkFrame(
-            stats_frame,
-            fg_color=("gray90", "gray17"),
-            corner_radius=16
-        )
-        files_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=5)
+        bytes_in = sum(r.source_bytes for r in converted)
+        bytes_out = sum(r.output_bytes for r in converted)
+        saved = bytes_in - bytes_out
 
-        self.files_count = ctk.CTkLabel(
-            files_card,
-            text="0",
-            font=ctk.CTkFont(size=36, weight="bold")
-        )
-        self.files_count.pack(pady=(20, 5))
+        # Every branch names all three outcomes it knows about. Reporting
+        # "all 1 images failed" while quietly ignoring 14 skips is how you get
+        # a user who thinks the app is broken when it did exactly the right thing.
+        parts = []
+        if skipped:
+            parts.append(f"{len(skipped):,} already existed")
+        if failed:
+            parts.append(f"{len(failed):,} failed")
+        tail = (" · " + " · ".join(parts)) if parts else ""
 
-        files_label = ctk.CTkLabel(
-            files_card,
-            text="Images Converted",
-            font=ctk.CTkFont(size=12),
-            text_color=("gray50", "gray60")
-        )
-        files_label.pack(pady=(0, 20))
-
-        # Savings stat card
-        savings_card = ctk.CTkFrame(
-            stats_frame,
-            fg_color=("gray90", "gray17"),
-            corner_radius=16
-        )
-        savings_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0), pady=5)
-
-        self.savings_percent = ctk.CTkLabel(
-            savings_card,
-            text="0%",
-            font=ctk.CTkFont(size=36, weight="bold"),
-            text_color=("green", "#4ade80")
-        )
-        self.savings_percent.pack(pady=(20, 5))
-
-        savings_label = ctk.CTkLabel(
-            savings_card,
-            text="Space Saved",
-            font=ctk.CTkFont(size=12),
-            text_color=("gray50", "gray60")
-        )
-        savings_label.pack(pady=(0, 20))
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Details Section
-        # ─────────────────────────────────────────────────────────────────────
-        details_frame = ctk.CTkFrame(
-            self,
-            fg_color=("gray90", "gray17"),
-            corner_radius=16
-        )
-        details_frame.grid(row=2, column=0, sticky="nsew", padx=30, pady=10)
-        details_frame.grid_columnconfigure(1, weight=1)
-
-        # Before size
-        before_label = ctk.CTkLabel(
-            details_frame,
-            text="Before:",
-            font=ctk.CTkFont(size=13),
-            text_color=("gray50", "gray60")
-        )
-        before_label.grid(row=0, column=0, sticky="w", padx=20, pady=(20, 5))
-
-        self.before_size = ctk.CTkLabel(
-            details_frame,
-            text="--",
-            font=ctk.CTkFont(size=13, weight="bold")
-        )
-        self.before_size.grid(row=0, column=1, sticky="e", padx=20, pady=(20, 5))
-
-        # After size
-        after_label = ctk.CTkLabel(
-            details_frame,
-            text="After:",
-            font=ctk.CTkFont(size=13),
-            text_color=("gray50", "gray60")
-        )
-        after_label.grid(row=1, column=0, sticky="w", padx=20, pady=5)
-
-        self.after_size = ctk.CTkLabel(
-            details_frame,
-            text="--",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=("green", "#4ade80")
-        )
-        self.after_size.grid(row=1, column=1, sticky="e", padx=20, pady=5)
-
-        # Processing time
-        time_label = ctk.CTkLabel(
-            details_frame,
-            text="Time:",
-            font=ctk.CTkFont(size=13),
-            text_color=("gray50", "gray60")
-        )
-        time_label.grid(row=2, column=0, sticky="w", padx=20, pady=(5, 20))
-
-        self.time_value = ctk.CTkLabel(
-            details_frame,
-            text="--",
-            font=ctk.CTkFont(size=13)
-        )
-        self.time_value.grid(row=2, column=1, sticky="e", padx=20, pady=(5, 20))
-
-        # Output folder
-        folder_label = ctk.CTkLabel(
-            details_frame,
-            text="Output:",
-            font=ctk.CTkFont(size=13),
-            text_color=("gray50", "gray60")
-        )
-        folder_label.grid(row=3, column=0, sticky="w", padx=20, pady=(5, 20))
-
-        self.folder_path = ctk.CTkLabel(
-            details_frame,
-            text="--",
-            font=ctk.CTkFont(size=11),
-            text_color=("gray50", "gray60")
-        )
-        self.folder_path.grid(row=3, column=1, sticky="e", padx=20, pady=(5, 20))
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Footer Buttons
-        # ─────────────────────────────────────────────────────────────────────
-        footer_frame = ctk.CTkFrame(self, fg_color="transparent")
-        footer_frame.grid(row=3, column=0, sticky="ew", padx=30, pady=(10, 30))
-        footer_frame.grid_columnconfigure((0, 1, 2), weight=1)
-
-        # Open folder button
-        open_btn = ctk.CTkButton(
-            footer_frame,
-            text="📂 Open Folder",
-            font=ctk.CTkFont(size=14),
-            height=45,
-            corner_radius=10,
-            fg_color=("gray70", "gray30"),
-            hover_color=("gray60", "gray40"),
-            command=self._open_output_folder
-        )
-        open_btn.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-
-        # Convert more button
-        more_btn = ctk.CTkButton(
-            footer_frame,
-            text="🔄 Convert More",
-            font=ctk.CTkFont(size=14),
-            height=45,
-            corner_radius=10,
-            command=self._convert_more
-        )
-        more_btn.grid(row=0, column=1, sticky="ew", padx=10)
-
-        # Done button
-        done_btn = ctk.CTkButton(
-            footer_frame,
-            text="✓ Done",
-            font=ctk.CTkFont(size=14),
-            height=45,
-            corner_radius=10,
-            fg_color=("green", "#22c55e"),
-            hover_color=("darkgreen", "#16a34a"),
-            command=self._done
-        )
-        done_btn.grid(row=0, column=2, sticky="ew", padx=(10, 0))
-
-    def _format_bytes(self, size_bytes: int) -> str:
-        """Format byte size as human-readable string."""
-        if size_bytes == 0:
-            return "0 B"
-
-        units = ["B", "KB", "MB", "GB"]
-        unit_index = 0
-        size = float(size_bytes)
-
-        while size >= 1024 and unit_index < len(units) - 1:
-            size /= 1024
-            unit_index += 1
-
-        return f"{size:.1f} {units[unit_index]}"
-
-    def _update_stats(self, results: List[Dict[str, Any]]):
-        """Update the stats display with processing results."""
-        total = len(results)
-        successful = sum(1 for r in results if r.get("success", False))
-
-        # Calculate sizes
-        total_before = sum(r.get("original_size", 0) for r in results)
-        total_after = sum(r.get("output_size", 0) for r in results)
-        saved = total_before - total_after if total_before > 0 else 0
-        savings_pct = int((saved / total_before) * 100) if total_before > 0 else 0
-
-        # Update UI
-        if successful == total and total > 0:
-            self.status_icon.configure(text="✅")
-            self.title_label.configure(text="Conversion Complete!")
-            self.subtitle_label.configure(text="All images converted successfully")
-        elif successful > 0:
-            self.status_icon.configure(text="⚠️")
-            self.title_label.configure(text="Conversion Complete")
-            self.subtitle_label.configure(text=f"{successful} of {total} images converted")
+        if cancelled:
+            self.headline.configure(text="Stopped", text_color=t.WARNING)
+            self.subhead.configure(text=f"{len(converted):,} converted before you stopped"
+                                        f" · {len(stopped):,} never started{tail}")
+        elif failed and converted:
+            self.headline.configure(text="Finished with errors", text_color=t.WARNING)
+            self.subhead.configure(text=f"{len(converted):,} converted{tail}")
+        elif failed:
+            self.headline.configure(text="Nothing converted", text_color=t.DANGER)
+            self.subhead.configure(text=f"{len(failed):,} failed"
+                                        + (f" · {len(skipped):,} already existed"
+                                           if skipped else "") + " — see details")
+        elif converted:
+            self.headline.configure(text="Done", text_color=t.SUCCESS)
+            self.subhead.configure(text=f"{len(converted):,} images converted{tail}")
         else:
-            self.status_icon.configure(text="❌")
-            self.title_label.configure(text="Conversion Failed")
-            self.subtitle_label.configure(text="No images were converted")
+            self.headline.configure(text="Nothing to do", text_color=t.MUTED)
+            self.subhead.configure(
+                text=f"All {len(skipped):,} images already existed — set "
+                     f"“If a file already exists” to Overwrite to redo them"
+                if skipped else "No images were processed")
 
-        self.files_count.configure(text=str(successful))
-        self.savings_percent.configure(text=f"{savings_pct}%")
-        self.before_size.configure(text=self._format_bytes(total_before))
-        self.after_size.configure(text=self._format_bytes(total_after))
+        self.tile_files.set(f"{len(converted):,}")
+        percent = round(saved / bytes_in * 100) if bytes_in else 0
+        self.tile_saved.set(f"{percent}%" if saved > 0 else "—")
+        self.tile_sizes.set(f"{format_bytes(bytes_in)} → {format_bytes(bytes_out)}"
+                            if converted else "—")
+        self.tile_time.set(format_duration(elapsed))
 
-        # Output folder
-        if self.app.output_folder:
-            folder_name = self.app.output_folder.name
-            self.folder_path.configure(text=folder_name)
+        self.output_folder = next((r.destination.parent for r in converted
+                                   if r.destination), None)
+        self._render_detail(converted, skipped, failed, saved)
 
-    def _open_output_folder(self):
-        """Open the output folder in Finder/Explorer."""
-        if self.app.output_folder and self.app.output_folder.exists():
-            folder = str(self.app.output_folder)
+    def _render_detail(self, converted, skipped, failed, saved: int) -> None:
+        self.detail.clear()
+        if saved > 0:
+            self.detail.append(f"Saved {format_bytes(saved)} across {len(converted):,} images.")
+        if self.output_folder:
+            self.detail.append(f"Output: {self.output_folder}")
+        if converted or skipped or failed:
+            self.detail.append("")
 
-            if platform.system() == "Darwin":  # macOS
-                subprocess.run(["open", folder])
-            elif platform.system() == "Windows":
-                subprocess.run(["explorer", folder])
-            else:  # Linux
-                subprocess.run(["xdg-open", folder])
+        # Problems first — that is what the user came to this screen for.
+        for r in failed:
+            self.detail.append(f"FAIL  {r.source.name:<40.40} {r.message}")
+        for r in skipped:
+            self.detail.append(f"skip  {r.source.name:<40.40} {r.message}")
+        notes = [r for r in converted if r.message]
+        for r in notes:
+            self.detail.append(f"note  {r.source.name:<40.40} {r.message}")
 
-    def _convert_more(self):
-        """Go back to drop zone to convert more images."""
-        self.app.reset_and_go_home()
+        if not (failed or skipped or notes):
+            self.detail.append("No warnings. Every image converted cleanly.")
 
-    def _done(self):
-        """Close the application."""
-        config.save()
-        self.app.destroy()
+    # ------------------------------------------------------------------
+    def open_output(self) -> None:
+        folder = self.output_folder
+        if not folder or not folder.exists():
+            return
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.run(["open", str(folder)], check=False)
+        elif system == "Windows":
+            subprocess.run(["explorer", str(folder)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(folder)], check=False)
 
-    def on_show(self, results: List[Dict[str, Any]] = None, **kwargs):
-        """Called when this screen is shown."""
-        if results:
-            self.results = results
-            self._update_stats(results)
+    def save_log(self) -> None:
+        default = f"conversion-log-{datetime.now():%Y%m%d-%H%M}.txt"
+        target = filedialog.asksaveasfilename(defaultextension=".txt",
+                                              initialfile=default,
+                                              filetypes=[("Text file", "*.txt")])
+        if not target:
+            return
+        lines: list[str] = []
+        for r in self.results:
+            row = f"{r.status.upper():<10} {r.source}"
+            if r.destination:
+                row += f" -> {r.destination} ({format_bytes(r.source_bytes)} -> {format_bytes(r.output_bytes)})"
+            if r.message:
+                row += f"  [{r.message}]"
+            lines.append(row)
+        Path(target).write_text("\n".join(lines), encoding="utf-8")
+        self.save_log_button.configure(text="Saved ✓")
+        self.after(1800, lambda: self.save_log_button.configure(text="Save log…"))

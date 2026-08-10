@@ -1,1 +1,1 @@
-# Screen modules
+"""Screens: home, progress, results."""
