@@ -1,354 +1,170 @@
-"""
-Screen 3: Progress - Real-time processing status display.
+"""Progress: ring, live counters, ETA, rolling log.
 
-Features:
-- Circular progress indicator
-- Overall progress bar
-- File list with per-file status
-- Time remaining estimate
-- Cancel button
+The runner calls back from worker threads; everything here goes through a
+queue and one `after` poll, because Tk is not thread-safe.
 """
+
+from __future__ import annotations
+
+import queue
+from typing import TYPE_CHECKING
 
 import customtkinter as ctk
-from pathlib import Path
-from typing import TYPE_CHECKING, List, Dict, Optional
-import threading
-import queue
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from core.runner import (CANCELLED, CONVERTED, FAILED, SKIPPED, FileResult, Progress,
+                         Runner, Scan, format_bytes, format_duration)
+from gui import theme as t
+from gui.widgets import Card, LogView, ProgressRing, StatTile, ghost_button
 
 if TYPE_CHECKING:
-    from gui.app import WebPConverterApp
+    from gui.app import App
 
-# Import config and processing engine
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from core.config import config
+POLL_MS = 80
+STATUS_MARK = {CONVERTED: "ok  ", SKIPPED: "skip", FAILED: "FAIL", CANCELLED: "----"}
 
 
 class ProgressScreen(ctk.CTkFrame):
-    """
-    Progress screen - Shows real-time processing status.
-    """
-
-    def __init__(self, parent, app: "WebPConverterApp"):
+    def __init__(self, parent, app: "App"):
         super().__init__(parent, fg_color="transparent")
         self.app = app
-        self.processing = False
-        self.cancel_requested = False
-        self.results = []
-        self.update_queue = queue.Queue()
+        self.runner: Runner | None = None
+        self.thread = None
+        self.events: queue.Queue = queue.Queue()
+        self._polling = False
+        self._last: Progress | None = None
 
-        self._setup_ui()
-
-    def _setup_ui(self):
-        """Build the UI components."""
-        # Configure grid
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self._build()
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Header
-        # ─────────────────────────────────────────────────────────────────────
-        header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.grid(row=0, column=0, sticky="ew", padx=30, pady=(30, 10))
-        header_frame.grid_columnconfigure(0, weight=1)
+    # -- layout ---------------------------------------------------------
+    def _build(self) -> None:
+        top = Card(self, "Converting")
+        top.grid(row=0, column=0, sticky="ew", padx=t.XL, pady=(t.LG, t.MD))
+        body = top.body()
+        body.grid_columnconfigure(0, weight=0)  # ring keeps its natural width
+        body.grid_columnconfigure(1, weight=1)  # tiles take the rest
 
-        title_label = ctk.CTkLabel(
-            header_frame,
-            text="Converting...",
-            font=ctk.CTkFont(size=24, weight="bold")
+        self.ring = ProgressRing(body, size=168)
+        self.ring.grid(row=0, column=0, rowspan=2, padx=(t.SM, t.XL))
+
+        tiles = ctk.CTkFrame(body, fg_color="transparent")
+        tiles.grid(row=0, column=1, sticky="ew")
+        tiles.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="tile")
+
+        self.tile_done = StatTile(tiles, "Converted", "0", t.SUCCESS)
+        self.tile_saved = StatTile(tiles, "Saved so far", "—", t.SUCCESS)
+        self.tile_eta = StatTile(tiles, "Time left", "—")
+        self.tile_issues = StatTile(tiles, "Skipped / failed", "0 / 0", t.MUTED)
+        for i, tile in enumerate((self.tile_done, self.tile_saved, self.tile_eta,
+                                  self.tile_issues)):
+            tile.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else t.SM, 0))
+
+        self.current = ctk.CTkLabel(body, text="", font=t.font(11), text_color=t.MUTED,
+                                    anchor="w")
+        self.current.grid(row=1, column=1, sticky="sw", pady=(t.MD, 0))
+
+        log_card = Card(self, "Activity")
+        log_card.grid(row=1, column=0, sticky="nsew", padx=t.XL, pady=(0, t.MD))
+        log_body = log_card.body()
+        log_body.grid_rowconfigure(0, weight=1)
+        self.log = LogView(log_body)
+        self.log.grid(row=0, column=0, sticky="nsew")
+
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.grid(row=2, column=0, sticky="ew", padx=t.XL, pady=(0, t.LG))
+        bar.grid_columnconfigure(0, weight=1)
+        self.elapsed = ctk.CTkLabel(bar, text="", font=t.font(12), text_color=t.MUTED,
+                                    anchor="w")
+        self.elapsed.grid(row=0, column=0, sticky="w")
+        self.cancel_button = ctk.CTkButton(bar, text="Stop", command=self.cancel,
+                                           height=40, width=140, font=t.font(13, "bold"),
+                                           corner_radius=t.RADIUS_SM,
+                                           fg_color=t.SURFACE_ALT, hover_color=t.DANGER,
+                                           text_color=t.TEXT, border_width=1,
+                                           border_color=t.BORDER)
+        self.cancel_button.grid(row=0, column=1, sticky="e")
+
+    # -- lifecycle ------------------------------------------------------
+    def start(self, scan: Scan) -> None:
+        self.log.clear()
+        self.ring.set(0, f"of {len(scan.files):,}")
+        self.tile_done.set("0")
+        self.tile_saved.set("—")
+        self.tile_eta.set("—")
+        self.tile_issues.set("0 / 0")
+        self.current.configure(text="")
+        self.elapsed.configure(text="")
+        self.cancel_button.configure(text="Stop", state="normal")
+        self._last = None
+
+        self.events = queue.Queue()
+        self.runner = Runner(
+            scan, self.app.settings,
+            on_progress=lambda p: self.events.put(("progress", p)),
+            on_file=lambda r: self.events.put(("file", r)),
+            on_finish=lambda results, cancelled, elapsed:
+                self.events.put(("finish", (results, cancelled, elapsed))),
         )
-        title_label.grid(row=0, column=0, sticky="w")
+        # kept so the window can wait for it on close
+        self.thread = self.runner.start_background()
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Main Progress Section
-        # ─────────────────────────────────────────────────────────────────────
-        progress_card = ctk.CTkFrame(
-            self,
-            fg_color=("gray90", "gray17"),
-            corner_radius=20
-        )
-        progress_card.grid(row=1, column=0, sticky="ew", padx=30, pady=20)
-        progress_card.grid_columnconfigure(0, weight=1)
+        if not self._polling:
+            self._polling = True
+            self._poll()
 
-        # Progress percentage
-        self.progress_label = ctk.CTkLabel(
-            progress_card,
-            text="0%",
-            font=ctk.CTkFont(size=48, weight="bold")
-        )
-        self.progress_label.grid(row=0, column=0, pady=(30, 5))
+    def cancel(self) -> None:
+        if self.runner:
+            self.runner.cancel()
+        self.cancel_button.configure(text="Stopping…", state="disabled")
 
-        # File count
-        self.count_label = ctk.CTkLabel(
-            progress_card,
-            text="0 of 0 images",
-            font=ctk.CTkFont(size=16),
-            text_color=("gray50", "gray60")
-        )
-        self.count_label.grid(row=1, column=0, pady=(0, 10))
-
-        # Progress bar
-        self.progress_bar = ctk.CTkProgressBar(
-            progress_card,
-            height=12,
-            corner_radius=6
-        )
-        self.progress_bar.set(0)
-        self.progress_bar.grid(row=2, column=0, sticky="ew", padx=40, pady=(10, 10))
-
-        # Time remaining
-        self.time_label = ctk.CTkLabel(
-            progress_card,
-            text="Calculating...",
-            font=ctk.CTkFont(size=13),
-            text_color=("gray50", "gray60")
-        )
-        self.time_label.grid(row=3, column=0, pady=(5, 30))
-
-        # ─────────────────────────────────────────────────────────────────────
-        # File List
-        # ─────────────────────────────────────────────────────────────────────
-        list_frame = ctk.CTkFrame(self, fg_color="transparent")
-        list_frame.grid(row=2, column=0, sticky="nsew", padx=30, pady=10)
-        list_frame.grid_columnconfigure(0, weight=1)
-        list_frame.grid_rowconfigure(1, weight=1)
-
-        list_label = ctk.CTkLabel(
-            list_frame,
-            text="Current Files",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=("gray50", "gray60")
-        )
-        list_label.grid(row=0, column=0, sticky="w", pady=(0, 5))
-
-        # Scrollable file list
-        self.file_list = ctk.CTkScrollableFrame(
-            list_frame,
-            fg_color=("gray90", "gray17"),
-            corner_radius=12
-        )
-        self.file_list.grid(row=1, column=0, sticky="nsew")
-        self.file_list.grid_columnconfigure(0, weight=1)
-
-        # File entry widgets (pre-create some for reuse)
-        self.file_entries: Dict[str, ctk.CTkLabel] = {}
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Footer with Cancel Button
-        # ─────────────────────────────────────────────────────────────────────
-        footer_frame = ctk.CTkFrame(self, fg_color="transparent")
-        footer_frame.grid(row=3, column=0, sticky="ew", padx=30, pady=(10, 30))
-        footer_frame.grid_columnconfigure(0, weight=1)
-
-        self.cancel_btn = ctk.CTkButton(
-            footer_frame,
-            text="✕ Cancel",
-            font=ctk.CTkFont(size=14),
-            height=40,
-            corner_radius=10,
-            fg_color=("gray70", "gray30"),
-            hover_color=("red", "darkred"),
-            command=self._cancel_processing
-        )
-        self.cancel_btn.grid(row=0, column=0)
-
-    def _add_file_entry(self, filename: str, status: str = "pending"):
-        """Add or update a file entry in the list."""
-        status_icons = {
-            "pending": "⏳",
-            "processing": "🔄",
-            "done": "✅",
-            "error": "❌",
-            "skipped": "⏭️"
-        }
-
-        icon = status_icons.get(status, "⏳")
-        display_name = filename[:40] + "..." if len(filename) > 40 else filename
-
-        if filename in self.file_entries:
-            self.file_entries[filename].configure(text=f"{icon} {display_name}")
-        else:
-            label = ctk.CTkLabel(
-                self.file_list,
-                text=f"{icon} {display_name}",
-                font=ctk.CTkFont(size=12),
-                anchor="w"
-            )
-            label.grid(sticky="ew", padx=10, pady=2)
-            self.file_entries[filename] = label
-
-    def _update_progress(self, completed: int, total: int, current_file: str = ""):
-        """Update progress display."""
-        if total == 0:
-            return
-
-        percent = int((completed / total) * 100)
-        self.progress_label.configure(text=f"{percent}%")
-        self.count_label.configure(text=f"{completed} of {total} images")
-        self.progress_bar.set(completed / total)
-
-        # Update current file
-        if current_file:
-            self._add_file_entry(current_file, "processing")
-
-    def _start_conversion(self):
-        """Start the conversion process in a background thread."""
-        self.processing = True
-        self.cancel_requested = False
-        self.results = []
-
-        # Clear file list
-        for widget in self.file_list.winfo_children():
-            widget.destroy()
-        self.file_entries.clear()
-
-        # Start processing thread
-        thread = threading.Thread(target=self._run_conversion, daemon=True)
-        thread.start()
-
-        # Start update loop
-        self._check_updates()
-
-    def _run_conversion(self):
-        """Run the actual conversion (in background thread)."""
+    # -- event pump -----------------------------------------------------
+    def _poll(self) -> None:
+        latest: Progress | None = None
+        finish = None
         try:
-            from core.converter import find_images, process_single_image
-        except ImportError:
-            # Fallback - will be implemented
-            self._simulate_conversion()
-            return
-
-        source_paths = self.app.source_paths
-        output_folder = self.app.output_folder
-
-        # Determine root folder
-        if source_paths and source_paths[0].is_dir():
-            root_folder = source_paths[0]
-        elif source_paths:
-            root_folder = source_paths[0].parent
-        else:
-            root_folder = Path.home()
-
-        # Find all images
-        images = find_images(source_paths, config.EXTENSIONS)
-        total = len(images)
-
-        if total == 0:
-            self.update_queue.put(("done", []))
-            return
-
-        # Process images
-        completed = 0
-        start_time = time.time()
-
-        for img_path in images:
-            if self.cancel_requested:
-                break
-
-            # Update UI
-            self.update_queue.put(("progress", completed, total, img_path.name))
-
-            # Process image
-            try:
-                result = process_single_image(img_path, output_folder, config, root_folder)
-                # Convert dataclass to dict for results screen
-                result_dict = {
-                    "success": result.success,
-                    "file": result.file_path,
-                    "output_path": result.output_path,
-                    "error": result.error_message,
-                    "original_size": result.original_size,
-                    "output_size": result.output_size,
-                    "was_skipped": result.was_skipped,
-                    "was_copied": result.was_copied,
-                }
-                self.results.append(result_dict)
-            except Exception as e:
-                self.results.append({
-                    "success": False,
-                    "error": str(e),
-                    "file": img_path,
-                    "original_size": 0,
-                    "output_size": 0
-                })
-
-            completed += 1
-
-        # Final update
-        self.update_queue.put(("done", self.results))
-
-    def _simulate_conversion(self):
-        """Simulate conversion for testing when core module not ready."""
-        import random
-
-        source_paths = self.app.source_paths
-        total = 0
-
-        # Count files
-        for path in source_paths:
-            if path.is_dir():
-                total += len(list(path.rglob("*")))
-            else:
-                total += 1
-
-        if total == 0:
-            total = 10  # Default for testing
-
-        for i in range(total):
-            if self.cancel_requested:
-                break
-
-            filename = f"image_{i+1:03d}.jpg"
-            self.update_queue.put(("progress", i, total, filename))
-            time.sleep(0.1)  # Simulate processing time
-
-            # Add to results
-            self.results.append({
-                "success": random.random() > 0.1,
-                "file": filename,
-                "saved_bytes": random.randint(10000, 500000)
-            })
-
-        self.update_queue.put(("done", self.results))
-
-    def _check_updates(self):
-        """Check update queue and update UI."""
-        try:
+            # Drain fully each tick and render only the newest progress value —
+            # at 16 workers the queue fills faster than the UI can redraw.
             while True:
-                msg = self.update_queue.get_nowait()
-
-                if msg[0] == "progress":
-                    _, completed, total, current_file = msg
-                    self._update_progress(completed, total, current_file)
-
-                elif msg[0] == "done":
-                    _, results = msg
-                    self.processing = False
-                    self.app.show_results(results)
-                    return
-
+                kind, payload = self.events.get_nowait()
+                if kind == "progress":
+                    latest = payload
+                elif kind == "file":
+                    self._log_file(payload)
+                elif kind == "finish":
+                    finish = payload
         except queue.Empty:
             pass
 
-        # Schedule next check
-        if self.processing:
-            self.after(100, self._check_updates)
+        if latest:
+            self._render(latest)
+        if finish:
+            self._polling = False
+            results, cancelled, elapsed = finish
+            self.app.finish_conversion(results, cancelled, elapsed)
+            return
+        self.after(POLL_MS, self._poll)
 
-    def _cancel_processing(self):
-        """Cancel the ongoing processing."""
-        self.cancel_requested = True
-        self.cancel_btn.configure(text="Cancelling...", state="disabled")
+    def _render(self, p: Progress) -> None:
+        self._last = p
+        self.ring.set(p.fraction, f"{p.completed:,} of {p.total:,}")
+        self.tile_done.set(f"{p.converted:,}")
+        saved = p.bytes_in - p.bytes_out
+        self.tile_saved.set(format_bytes(saved) if saved > 0 else "—")
+        eta = p.eta_seconds
+        self.tile_eta.set(format_duration(eta) if eta is not None else "—")
+        self.tile_issues.set(f"{p.skipped:,} / {p.failed:,}")
+        self.current.configure(text=p.current)
+        rate = f" · {p.rate:.1f} img/s" if p.rate else ""
+        self.elapsed.configure(text=f"Elapsed {format_duration(p.elapsed)}{rate}")
 
-    def on_show(self, **kwargs):
-        """Called when this screen is shown."""
-        # Reset state
-        self.progress_bar.set(0)
-        self.progress_label.configure(text="0%")
-        self.count_label.configure(text="Starting...")
-        self.time_label.configure(text="Calculating...")
-        self.cancel_btn.configure(text="✕ Cancel", state="normal")
-
-        # Start conversion
-        self._start_conversion()
+    def _log_file(self, result: FileResult) -> None:
+        mark = STATUS_MARK.get(result.status, "?")
+        detail = ""
+        if result.status == CONVERTED:
+            detail = f"{format_bytes(result.source_bytes)} → {format_bytes(result.output_bytes)}"
+            if result.message:
+                detail += f"  ({result.message})"
+        elif result.message:
+            detail = result.message
+        self.log.append(f"{mark}  {result.source.name:<44.44} {detail}")

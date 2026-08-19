@@ -1,0 +1,92 @@
+name: Build
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+# No job here creates releases, publishes packages, or writes via the API.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # The engine has no UI imports, so it tests without a display.
+      - run: pip install Pillow piexif
+      - run: python tests/test_engine.py
+
+  smoke:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      # Proves the GUI actually constructs on this OS — imports, fonts, theme
+      # tokens, widget options — rather than only that the engine passes.
+      - run: python main.py --check
+      - run: python tests/test_gui_boot.py
+
+  macos-app:
+    needs: smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # py2app bundles the running interpreter, so a single runner produces
+          # a single-arch app that will not launch on the other kind of Mac.
+          # macos-15-intel is the current Intel label; macos-13 was retired and
+          # a job targeting it queues forever instead of failing.
+          - runner: macos-15-intel
+            arch: intel
+          - runner: macos-14
+            arch: apple-silicon
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          pip install -r requirements.txt
+          pip install py2app
+      # v1's workflow cd'd into a folder that was never in the repo, so this
+      # job had never once produced a bundle.
+      - run: python setup.py py2app
+      - name: Verify the bundle launches
+        run: |
+          APP="dist/WebP Studio.app"
+          test -d "$APP" || { echo "no bundle produced"; exit 1; }
+          file "$APP/Contents/MacOS/WebP Studio"
+          # Headless runners have no window server, so a full launch can't be
+          # tested here — confirm the embedded interpreter starts and imports.
+          "$APP/Contents/MacOS/WebP Studio" --check
+      - run: ditto -c -k --keepParent "dist/WebP Studio.app" "WebP-Studio-macOS-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WebP-Studio-macOS-${{ matrix.arch }}
+          path: WebP-Studio-macOS-${{ matrix.arch }}.zip
+          retention-days: 14
+

@@ -1,153 +1,210 @@
-"""
-Main Application Window for ConvertImagesToWebP - MacAlpha v0.1
+"""Application shell: window, header, navigation, drag & drop, shortcuts."""
 
-This is the main entry point for the GUI app. It manages:
-- Window creation and theming
-- Screen navigation (Drop Zone → Settings → Progress → Results)
-- Global state management
-"""
+from __future__ import annotations
+
+import platform
+import sys
+import tkinter
+from pathlib import Path
 
 import customtkinter as ctk
-from pathlib import Path
-from typing import Optional, List, Callable
-import sys
-import os
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from core.config import config, AppConfig
-from gui.screens.dropzone import DropZoneScreen
-from gui.screens.settings import SettingsScreen
+from core.config import VERSION, Settings
+from core.runner import FileResult, Scan
+from gui import theme as t
+from gui.screens.home import HomeScreen
 from gui.screens.progress import ProgressScreen
 from gui.screens.results import ResultsScreen
+from gui.widgets import relayout_ring_colors, segmented
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+
+    DND_IMPORTED = True
+except Exception:  # optional: the app is fully usable without it
+    DND_IMPORTED = False
+
+# tkinterdnd2 grafts drop_target_register/dnd_bind onto tkinter.BaseWidget, but
+# tkinter.Tk is not a BaseWidget subclass — so the root window never gets them
+# unless DnDWrapper is mixed in explicitly.
+if DND_IMPORTED:
+    class _Window(ctk.CTk, TkinterDnD.DnDWrapper):
+        pass
+else:
+    _Window = ctk.CTk
+
+IS_MAC = platform.system() == "Darwin"
+MOD = "Command" if IS_MAC else "Control"
 
 
-class WebPConverterApp(ctk.CTk):
-    """
-    Main application window for ConvertImagesToWebP MacAlpha.
-
-    Manages screen navigation and global state.
-    """
-
-    VERSION = "0.1.0"
-    APP_NAME = "ConvertImagesToWebP - MacAlpha"
-
-    def __init__(self):
+class App(_Window):
+    def __init__(self) -> None:
         super().__init__()
+        self.settings = Settings.load()
+        self.sources: list[Path] = []
+        self.scan: Scan | None = None
 
-        # Configure window
-        self.title(self.APP_NAME)
-        self.geometry(f"{config.WINDOW_WIDTH}x{config.WINDOW_HEIGHT}")
-        self.minsize(500, 600)
-
-        # Set theme
-        ctk.set_appearance_mode(config.THEME)
+        t.apply_appearance(self.settings.theme)
         ctk.set_default_color_theme("blue")
 
-        # State management
-        self.source_paths: List[Path] = []
-        self.output_folder: Optional[Path] = None
-        self.processing_results: List = []
+        self.title(f"WebP Studio {VERSION}")
+        self.geometry(f"{self.settings.window_width}x{self.settings.window_height}")
+        self.minsize(900, 640)
+        self.configure(fg_color=t.BG)
 
-        # Screen container
-        self.container = ctk.CTkFrame(self, fg_color="transparent")
-        self.container.pack(fill="both", expand=True, padx=0, pady=0)
-        self.container.grid_rowconfigure(0, weight=1)
-        self.container.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
-        # Initialize screens (lazy loading pattern)
-        self.screens = {}
-        self.current_screen = None
+        self._build_header()
+        self._build_screens()
+        self._enable_drag_and_drop()
+        self._bind_shortcuts()
 
-        # Show initial screen
-        self.show_screen("dropzone")
-
-        # Bind window close
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.show("home")
 
-    def show_screen(self, screen_name: str, **kwargs) -> None:
-        """
-        Navigate to a specific screen.
+    # -- chrome ---------------------------------------------------------
+    def _build_header(self) -> None:
+        header = ctk.CTkFrame(self, fg_color="transparent", height=64)
+        header.grid(row=0, column=0, sticky="ew", padx=t.XL, pady=(t.LG, 0))
+        header.grid_columnconfigure(1, weight=1)
 
-        Args:
-            screen_name: One of 'dropzone', 'settings', 'progress', 'results'
-            **kwargs: Additional arguments to pass to the screen
-        """
-        # Create screen if not exists
-        if screen_name not in self.screens:
-            self.screens[screen_name] = self._create_screen(screen_name)
+        titles = ctk.CTkFrame(header, fg_color="transparent")
+        titles.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(titles, text="WebP Studio", font=t.font(20, "bold"),
+                     text_color=t.TEXT).grid(row=0, column=0, sticky="w")
+        self.tagline = ctk.CTkLabel(titles, text="Batch image conversion",
+                                    font=t.font(11), text_color=t.MUTED)
+        self.tagline.grid(row=1, column=0, sticky="w")
 
-        # Hide current screen
-        if self.current_screen:
-            self.current_screen.pack_forget()
+        self.theme_buttons = segmented(header, ["System", "Light", "Dark"],
+                                       self.settings.theme.capitalize(),
+                                       self._set_theme)
+        self.theme_buttons.configure(width=210)
+        self.theme_buttons.grid(row=0, column=2, sticky="e")
 
-        # Show new screen
-        screen = self.screens[screen_name]
-        screen.pack(fill="both", expand=True)
-        self.current_screen = screen
+    def _build_screens(self) -> None:
+        self.container = ctk.CTkFrame(self, fg_color="transparent")
+        self.container.grid(row=1, column=0, sticky="nsew")
+        self.container.grid_columnconfigure(0, weight=1)
+        self.container.grid_rowconfigure(0, weight=1)
 
-        # Update screen with any passed data
-        if hasattr(screen, "on_show"):
-            screen.on_show(**kwargs)
-
-    def _create_screen(self, screen_name: str) -> ctk.CTkFrame:
-        """Create a screen instance by name."""
-        screen_classes = {
-            "dropzone": DropZoneScreen,
-            "settings": SettingsScreen,
-            "progress": ProgressScreen,
-            "results": ResultsScreen,
+        self.screens = {
+            "home": HomeScreen(self.container, self),
+            "progress": ProgressScreen(self.container, self),
+            "results": ResultsScreen(self.container, self),
         }
+        self.current = ""
 
-        screen_class = screen_classes.get(screen_name)
-        if screen_class:
-            return screen_class(self.container, app=self)
-        else:
-            raise ValueError(f"Unknown screen: {screen_name}")
+    def show(self, name: str) -> None:
+        for screen in self.screens.values():
+            screen.grid_remove()
+        screen = self.screens[name]
+        screen.grid(row=0, column=0, sticky="nsew")
+        self.current = name
+        if hasattr(screen, "on_show"):
+            screen.on_show()
 
-    def set_source_paths(self, paths: List[Path]) -> None:
-        """Set the source paths to process."""
-        self.source_paths = paths
+    def _set_theme(self, label: str) -> None:
+        self.settings.theme = label.lower()
+        t.apply_appearance(self.settings.theme)
+        self.settings.save()
+        # Rings are raw Canvas drawings; CustomTkinter can't repaint them for us.
+        relayout_ring_colors(self)
 
-        # Determine output folder
-        if paths:
-            if paths[0].is_dir():
-                self.output_folder = paths[0] / config.OUTPUT_FOLDER
-            else:
-                self.output_folder = paths[0].parent / config.OUTPUT_FOLDER
+    # -- drag & drop ----------------------------------------------------
+    def _enable_drag_and_drop(self) -> None:
+        """Wire tkinterdnd2 if present. v1 shipped a 'drop zone' that could not
+        accept a drop; without the package we at least say so."""
+        self.dnd_enabled = False
+        if not DND_IMPORTED:
+            self.tagline.configure(
+                text="Batch image conversion · install tkinterdnd2 for drag & drop")
+            return
+        try:
+            self.TkdndVersion = TkinterDnD._require(self)
+            self.drop_target_register(DND_FILES)
+            self.dnd_bind("<<Drop>>", self._on_drop)
+            self.dnd_bind("<<DropEnter>>", lambda _e: self._highlight(True))
+            self.dnd_bind("<<DropLeave>>", lambda _e: self._highlight(False))
+            self.dnd_enabled = True
+        except Exception as exc:
+            # Print it: a silent except here hid the missing DnDWrapper mixin
+            # behind a tagline that looked like a normal "not installed" state.
+            print(f"drag & drop disabled: {type(exc).__name__}: {exc}", file=sys.stderr)
+            self.tagline.configure(
+                text="Batch image conversion · drag & drop unavailable on this build")
 
-    def start_processing(self) -> None:
-        """Navigate to progress screen and start processing."""
-        self.show_screen("progress")
+    def _on_drop(self, event) -> None:
+        self._highlight(False)
+        if self.current != "home":
+            return  # dropping mid-run would silently discard the drop
+        paths = [Path(p) for p in self.tk.splitlist(event.data)]
+        self.screens["home"].handle_drop(paths)
 
-    def show_results(self, results: List) -> None:
-        """Navigate to results screen with processing results."""
-        self.processing_results = results
-        self.show_screen("results", results=results)
+    def _highlight(self, active: bool) -> None:
+        if self.current == "home":
+            self.screens["home"].highlight_drop(active)
 
-    def reset_and_go_home(self) -> None:
-        """Reset state and go back to drop zone."""
-        self.source_paths = []
-        self.output_folder = None
-        self.processing_results = []
-        self.show_screen("dropzone")
+    # -- shortcuts ------------------------------------------------------
+    def _bind_shortcuts(self) -> None:
+        self.bind_all(f"<{MOD}-o>", lambda _e: self._if_home(lambda h: h.browse_folder()))
+        self.bind_all(f"<{MOD}-Shift-o>", lambda _e: self._if_home(lambda h: h.browse_files()))
+        self.bind_all("<Return>", lambda _e: self._if_home(lambda h: h.start()))
+        self.bind_all("<Escape>", lambda _e: self._escape())
+
+    def _is_typing(self) -> bool:
+        """CustomTkinter wraps a real tkinter.Entry, and focus_get() returns
+        that inner widget — so checking for "CTkEntry" never matched and Return
+        started a conversion while you were still typing a value."""
+        return isinstance(self.focus_get(), (tkinter.Entry, tkinter.Text))
+
+    def _if_home(self, action) -> None:
+        if self.current == "home" and not self._is_typing():
+            action(self.screens["home"])
+
+    def _escape(self) -> None:
+        if self.current == "progress":
+            self.screens["progress"].cancel()
+        elif self.current == "results":
+            self.go_home()
+        elif self.current == "home":
+            self.screens["home"].clear_sources()
+
+    # -- flow -----------------------------------------------------------
+    def begin_conversion(self, scan: Scan) -> None:
+        self.show("progress")
+        self.screens["progress"].start(scan)
+
+    def finish_conversion(self, results: list[FileResult], cancelled: bool,
+                          elapsed: float) -> None:
+        self.show("results")
+        self.screens["results"].show(results, cancelled, elapsed)
+
+    def go_home(self) -> None:
+        self.show("home")
 
     def on_close(self) -> None:
-        """Handle window close event."""
-        # Save window geometry to config
-        config.WINDOW_WIDTH = self.winfo_width()
-        config.WINDOW_HEIGHT = self.winfo_height()
-        config.save()
-
+        progress = self.screens.get("progress")
+        if progress and progress.runner and not progress.runner.cancelled:
+            progress.runner.cancel()
+            # Cancelling only sets a flag; a worker mid-encode keeps writing.
+            # Give it a moment to land so we don't tear the interpreter down
+            # underneath a file write.
+            thread = getattr(progress, "thread", None)
+            if thread and thread.is_alive():
+                thread.join(timeout=5.0)
+        self.settings.window_width = self.winfo_width()
+        self.settings.window_height = self.winfo_height()
+        self.settings.save()
         self.destroy()
 
 
-def main():
-    """Main entry point."""
-    app = WebPConverterApp()
+def main() -> int:
+    app = App()
     app.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

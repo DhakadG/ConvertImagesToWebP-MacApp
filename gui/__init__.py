@@ -1,2 +1,1 @@
-# ConvertImagesToWebP - MacAlpha v0.1
-# macOS GUI App for WebP Conversion
+"""GUI layer: theme tokens, widgets, screens."""
