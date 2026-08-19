@@ -1,5 +1,9 @@
 # WebP Studio 2.0
 
+[![Build](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml/badge.svg)](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](requirements.txt)
+
 Batch image converter for macOS, Windows and Linux. Drop a folder, pick a
 preset, get smaller images.
 
@@ -56,6 +60,15 @@ python main.py --check
 | `tkinterdnd2` | drag & drop onto the window |
 | `piexif` | removing GPS tags while keeping the rest of the EXIF |
 | `pillow-heif` | reading iPhone `.heic` / `.heif` |
+
+### Prebuilt macOS app
+
+No signed releases yet — grab a build straight from CI instead:
+[**Actions → Build → latest run**](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml)
+→ pick `WebP-Studio-macOS-apple-silicon` or `WebP-Studio-macOS-intel` under
+Artifacts. Unzip, then see [Gatekeeper](#the-app-is-damaged-and-cant-be-opened)
+below before opening it. Artifacts expire after 14 days, so if the run has
+aged out, use `workflow_dispatch` to trigger a fresh one from the Actions tab.
 
 ## macOS
 
@@ -162,6 +175,11 @@ without a display.
 Not covered anywhere: a human double-clicking the built `.app`. CI runners have
 no window server, so that last step is yours.
 
+## Contributing
+
+Issues and PRs welcome. `python tests/test_engine.py` should stay green with
+no display, and CI runs it plus the GUI boot suite on every PR.
+
 ## License
 
-MIT.
+[MIT](LICENSE).
