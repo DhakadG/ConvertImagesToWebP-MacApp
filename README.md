@@ -63,12 +63,15 @@ python main.py --check
 
 ### Prebuilt macOS app
 
-No signed releases yet — grab a build straight from CI instead:
-[**Actions → Build → latest run**](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml)
-→ pick `WebP-Studio-macOS-apple-silicon` or `WebP-Studio-macOS-intel` under
-Artifacts. Unzip, then see [Gatekeeper](#the-app-is-damaged-and-cant-be-opened)
-below before opening it. Artifacts expire after 14 days, so if the run has
-aged out, use `workflow_dispatch` to trigger a fresh one from the Actions tab.
+Grab the latest build from [**Releases**](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/releases) —
+pick `WebP-Studio-macOS-apple-silicon.zip` or `WebP-Studio-macOS-intel.zip`.
+Unzip, then see [Gatekeeper](#the-app-is-damaged-and-cant-be-opened) below
+before opening it. These are unsigned dev builds cut from tags, not
+App Store releases.
+
+No tagged release yet, or want the very latest commit instead? Grab a build
+straight from CI: [**Actions → Build → latest run**](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml)
+→ Artifacts. Those expire after 14 days; run `workflow_dispatch` for a fresh one.
 
 ## macOS
 
@@ -179,6 +182,18 @@ no window server, so that last step is yours.
 
 Issues and PRs welcome. `python tests/test_engine.py` should stay green with
 no display, and CI runs it plus the GUI boot suite on every PR.
+
+### Cutting a release
+
+Push a tag matching `v*.*.*`:
+
+```bash
+git tag v2.0.0
+git push origin v2.0.0
+```
+
+`.github/workflows/release.yml` builds both macOS bundles and publishes them
+to a new GitHub Release, titled after the tag with auto-generated notes.
 
 ## License
 

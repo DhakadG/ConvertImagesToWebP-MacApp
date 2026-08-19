@@ -14,9 +14,13 @@ from PIL import Image, ImageCms, ImageOps, features
 
 from core.config import Settings
 
-# We routinely handle 100 MP camera scans; the decompression-bomb guard is for
-# untrusted input, and these files come from the user's own disk.
-Image.MAX_IMAGE_PIXELS = None
+# Raised, not disabled: legitimate scans and panoramas run well past Pillow's
+# ~89 MP default, but a folder can still contain a downloaded or crafted file
+# with an absurd declared size. Pillow itself only *warns* (doesn't raise)
+# between 1x and 2x this value, so the real gate is the explicit check in
+# convert_file below; this just keeps Pillow's own internal calls bounded too.
+MAX_PIXELS = 300_000_000
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 # Optional decoders. Both are pure-import side effects, so probe once at module
 # load rather than per-file.
@@ -224,11 +228,25 @@ def _check_dimensions(width: int, height: int, output_format: str) -> None:
             f"{limit}px — set a downscale limit, or choose PNG/AVIF")
 
 
+def _check_pixel_count(width: int, height: int) -> None:
+    """Pillow only warns, and still decodes, between 1x and 2x MAX_PIXELS —
+    this is the actual gate. Called right after Image.open(), before any
+    pixel data is touched, so an oversized file costs a header read, not a
+    full decode."""
+    pixels = width * height
+    if pixels > MAX_PIXELS:
+        raise ValueError(
+            f"{width}x{height} ({pixels:,} px) exceeds the {MAX_PIXELS:,} px "
+            f"safety limit — skipped before decoding")
+
+
 def convert_file(source: Path, destination: Path, settings: Settings) -> Encoded:
     """Convert one image. Raises on failure — the runner turns that into a
     per-file error row so one bad file can't abort the batch."""
     note = ""
     with Image.open(source) as opened:
+        _check_pixel_count(*opened.size)
+
         if getattr(opened, "n_frames", 1) > 1:
             note = "animated source, first frame only"
 
