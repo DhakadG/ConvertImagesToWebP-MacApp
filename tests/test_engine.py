@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PIL import Image
 
 from core.config import Settings
-from core.imaging import (_check_dimensions, _target_size, available_output_formats,
-                          convert_file)
+from core.imaging import (MAX_PIXELS, _check_dimensions, _check_pixel_count,
+                          _target_size, available_output_formats, convert_file)
 from core.runner import CONVERTED, FAILED, SKIPPED, Runner, scan_sources, common_root
 
 
@@ -242,6 +242,21 @@ def test_webp_dimension_limit(tmp: Path):
     print("  webp dimension limit ok")
 
 
+def test_pixel_count_limit():
+    """Pillow only warns (still decodes) between 1x and 2x MAX_IMAGE_PIXELS —
+    this must reject anything over the limit itself, not Pillow's fuzzed one."""
+    side = int(MAX_PIXELS ** 0.5)
+    _check_pixel_count(side, side)  # just under the limit: fine
+
+    try:
+        _check_pixel_count(side + 1, side + 1)  # inside Pillow's warn-only zone
+    except ValueError as exc:
+        assert str(MAX_PIXELS) in str(exc).replace(",", ""), exc
+    else:
+        raise AssertionError("image over MAX_PIXELS was not rejected")
+    print("  pixel count limit ok")
+
+
 def test_format_falls_back_to_a_writable_one(tmp: Path):
     """A preset must not select a format this Pillow build cannot encode."""
     settings = Settings.from_dict({"output_format": "avif"})
@@ -272,6 +287,7 @@ def main() -> int:
         test_overwrite_keeps_good_output_when_encode_fails(tmp / "t11")
         test_webp_dimension_limit(tmp / "t12")
         test_format_falls_back_to_a_writable_one(tmp / "t13")
+        test_pixel_count_limit()
     print("\nall engine checks passed")
     return 0
 
