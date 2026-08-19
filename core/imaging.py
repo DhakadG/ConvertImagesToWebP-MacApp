@@ -14,9 +14,12 @@ from PIL import Image, ImageCms, ImageOps, features
 
 from core.config import Settings
 
-# We routinely handle 100 MP camera scans; the decompression-bomb guard is for
-# untrusted input, and these files come from the user's own disk.
-Image.MAX_IMAGE_PIXELS = None
+# Raised, not disabled: legitimate scans and panoramas run well past Pillow's
+# ~89 MP default, but a folder can still contain a downloaded or crafted file
+# with an absurd declared size. This keeps Pillow's check — which raises
+# DecompressionBombError before allocating pixel memory, caught per-file like
+# any other conversion failure — while giving real large images headroom.
+Image.MAX_IMAGE_PIXELS = 300_000_000
 
 # Optional decoders. Both are pure-import side effects, so probe once at module
 # load rather than per-file.

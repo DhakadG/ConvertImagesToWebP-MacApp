@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+# Only the publish job needs to write, to create the release and attach assets.
+permissions:
+  contents: read
+
+jobs:
+  macos-app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # py2app bundles the running interpreter, so a single runner produces
+          # a single-arch app that will not launch on the other kind of Mac.
+          - runner: macos-15-intel
+            arch: intel
+          - runner: macos-14
+            arch: apple-silicon
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          pip install -r requirements.txt
+          pip install py2app
+      - run: python setup.py py2app
+      - name: Verify the bundle launches
+        run: |
+          APP="dist/WebP Studio.app"
+          test -d "$APP" || { echo "no bundle produced"; exit 1; }
+          "$APP/Contents/MacOS/WebP Studio" --check
+      - run: ditto -c -k --keepParent "dist/WebP Studio.app" "WebP-Studio-macOS-${{ matrix.arch }}.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: WebP-Studio-macOS-${{ matrix.arch }}
+          path: WebP-Studio-macOS-${{ matrix.arch }}.zip
+          retention-days: 5
+
+  publish:
+    needs: macos-app
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: WebP-Studio-macOS-*
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/*.zip \
+            --title "${{ github.ref_name }}" \
+            --generate-notes
