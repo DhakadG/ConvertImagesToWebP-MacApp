@@ -43,17 +43,153 @@ A rewrite of ConvertImagesToWebP-MacAlpha v0.1 — same idea, working engine.
 
 ## Install
 
+Pick the row that matches you.
+
+| You want to | Go to |
+|---|---|
+| Run the Mac app | [Install on macOS](#install-on-macos) |
+| Run it on Windows for testing | [Run on Windows](#run-on-windows) |
+| Run it on Linux | [Run on Linux](#run-on-linux) |
+| Build the `.app` yourself | [Build a .app](#build-a-app) |
+
+---
+
+## Install on macOS
+
+### 1. Work out which build you need
+
+ → **About This Mac**:
+
+| It says | Download |
+|---|---|
+| Chip: Apple M1 / M2 / M3 / M4 … | `WebP-Studio-macOS-apple-silicon.zip` |
+| Processor: Intel … | `WebP-Studio-macOS-intel.zip` |
+
+They are not interchangeable. py2app bundles the interpreter it built with, so
+each zip runs on one kind of Mac only. The wrong one will refuse to open.
+
+### 2. Download it
+
+[**Releases**](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/releases/latest)
+— every tagged version, kept permanently.
+
+If there is no release yet, or you want the newest commit instead, take a build
+from CI: [**Actions → Build**](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml)
+→ open the most recent green run → **Artifacts**. CI builds are kept 90 days.
+You must be signed in to GitHub to download artifacts.
+
+### 3. Unzip and install
+
+Double-click the zip, then drag **WebP Studio** into your Applications folder.
+
+### 4. Get past Gatekeeper
+
+**Expect this to fail the first time.** macOS will say the app *"is damaged and
+can't be opened"* or *"cannot be opened because Apple cannot check it for
+malicious software."*
+
+Nothing is damaged. These builds are unsigned and un-notarized — signing
+requires a paid Apple Developer account — and macOS quarantines anything
+unsigned that arrives via a browser. You have to clear that flag yourself.
+
+**The one-liner that always works:**
+
 ```bash
+xattr -dr com.apple.quarantine "/Applications/WebP Studio.app"
+```
+
+Then open the app normally. That is the whole fix.
+
+<details>
+<summary>Prefer to do it without the Terminal?</summary>
+
+**macOS 15 (Sequoia) and later**
+
+1. Double-click the app. Let it get blocked. Dismiss the dialog.
+2. **System Settings → Privacy & Security**.
+3. Scroll to the Security section. There is a line saying *"WebP Studio was
+   blocked to protect your Mac."*
+4. Click **Open Anyway**, then authenticate.
+5. Double-click the app again and click **Open**.
+
+Step 1 matters — the button in step 3 does not appear until macOS has blocked
+the app at least once.
+
+**macOS 14 (Sonoma) and earlier**
+
+Right-click (or Control-click) the app → **Open** → **Open** in the dialog.
+The right-click route is what makes the "open anyway" button appear; plain
+double-clicking never offers it.
+
+</details>
+
+> Only do this for builds you produced or trust. Clearing the quarantine flag
+> is exactly what you would do for genuine malware too — the check exists for a
+> reason, and you are choosing to skip it here because you know where this
+> binary came from.
+
+### 5. If it bounces in the Dock and quits
+
+That is not Gatekeeper, that is a crash. Get the real error:
+
+```bash
+"/Applications/WebP Studio.app/Contents/MacOS/WebP Studio" --check
+```
+
+That prints your Python, your Tk version, and which optional features are
+available, instead of dying silently. Include its output if you file an issue.
+
+---
+
+## Run on Windows
+
+There is no packaged `.exe` — Windows runs from source. Takes about a minute.
+
+**1. Install Python 3.10 or newer** from [python.org](https://www.python.org/downloads/windows/).
+Tick **"Add python.exe to PATH"** in the installer.
+
+> Avoid the Microsoft Store build of Python — it ships without a usable
+> `tkinter`, and this is a Tk app. `python main.py --check` will tell you if
+> yours is the broken kind.
+
+**2. Set it up** (PowerShell, from the repo folder):
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python main.py --check
+```
+
+If `Activate.ps1` is blocked by execution policy, either use
+`.venv\Scripts\activate.bat` or run
+`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first.
+
+**3. Run it:**
+
+```powershell
+python main.py
+```
+
+Every launch after this only needs the activate line and `python main.py`.
+
+---
+
+## Run on Linux
+
+```bash
+sudo apt install python3-tk          # or your distro's Tk package
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python main.py
 ```
 
-Only `customtkinter` and `Pillow` are required. The rest are optional and the
-app degrades cleanly without them — check what you have:
+---
 
-```bash
-python main.py --check
-```
+## Dependencies
+
+Only `customtkinter` and `Pillow` are required. Everything else is optional and
+the app degrades cleanly without it:
 
 | Optional | Enables |
 |---|---|
@@ -61,23 +197,14 @@ python main.py --check
 | `piexif` | removing GPS tags while keeping the rest of the EXIF |
 | `pillow-heif` | reading iPhone `.heic` / `.heif` |
 
-### Prebuilt macOS app
+`python main.py --check` prints exactly what you have and what each missing
+package costs you.
 
-Grab the latest build from [**Releases**](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/releases) —
-pick `WebP-Studio-macOS-apple-silicon.zip` or `WebP-Studio-macOS-intel.zip`.
-Unzip, then see [Gatekeeper](#the-app-is-damaged-and-cant-be-opened) below
-before opening it. These are unsigned dev builds cut from tags, not
-App Store releases.
-
-No tagged release yet, or want the very latest commit instead? Grab a build
-straight from CI: [**Actions → Build → latest run**](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml)
-→ Artifacts. Those expire after 14 days; run `workflow_dispatch` for a fresh one.
-
-## macOS
+## Running from source on macOS
 
 **Use Homebrew's Python, not Apple's.** macOS ships Tk 8.5.9; CustomTkinter
-needs 8.6+ and renders as black rectangles below that. `python main.py --check`
-prints your Tk version and says so if it's too old.
+needs 8.6+ and renders as black rectangles below that. `--check` says so if
+your Tk is too old.
 
 ```bash
 brew install python python-tk
@@ -89,6 +216,7 @@ python main.py
 ### Build a .app
 
 ```bash
+pip install py2app
 python setup.py py2app     # -> dist/WebP Studio.app
 ```
 
@@ -98,24 +226,11 @@ build no longer fails without one.
 **py2app bundles the interpreter it is run with, so the result is single-arch.**
 An app built on an M-series Mac will not launch on an Intel Mac and vice versa.
 CI therefore builds both (`macos-15-intel`, `macos-14` Apple Silicon) and
-uploads them as separate artifacts. To produce one universal binary instead,
-build with a universal2 python.org interpreter rather than a Homebrew one.
+publishes them as separate downloads. For one universal binary instead, build
+with a universal2 python.org interpreter rather than a Homebrew one.
 
 `LSMinimumSystemVersion` is set to 10.13, but the real floor is whatever the
 building Python supports.
-
-### "The app is damaged and can't be opened"
-
-That is Gatekeeper, not a broken build — the bundle is unsigned and
-un-notarized, and anything downloaded from a browser or CI artifact gets
-quarantined. Either right-click → Open the first time, or:
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/WebP Studio.app"
-```
-
-Signing and notarizing requires a paid Apple Developer account; that is the
-only real fix for distributing to other people.
 
 ## Tests
 
