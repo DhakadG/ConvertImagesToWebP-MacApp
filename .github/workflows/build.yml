@@ -58,8 +58,10 @@ jobs:
           # a job targeting it queues forever instead of failing.
           - runner: macos-15-intel
             arch: intel
+            expect_arch: x86_64
           - runner: macos-14
             arch: apple-silicon
+            expect_arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -75,18 +77,86 @@ jobs:
       # v1's workflow cd'd into a folder that was never in the repo, so this
       # job had never once produced a bundle.
       - run: python setup.py py2app
-      - name: Verify the bundle launches
+      - name: Inspect the bundle
+        run: |
+          set -euo pipefail
+          APP="dist/WebP Studio.app"
+          BIN="$APP/Contents/MacOS/WebP Studio"
+          test -d "$APP" || { echo "::error::py2app produced no bundle"; exit 1; }
+
+          # Checking the launcher stub proves nothing: setup-python ships a
+          # universal2 CPython, so the stub, the framework and _tkinter.so all
+          # report "x86_64 arm64" on every runner. The binaries that decide
+          # portability are the pip-installed wheels, which are single-arch.
+          PILC=$(find "$APP/Contents/Resources" -name '_imaging.cpython-*-darwin.so' -print -quit)
+          test -n "$PILC" || { echo "::error::Pillow's _imaging module is not in the bundle"; exit 1; }
+          archs=$(lipo -archs "$PILC")
+          echo "Pillow _imaging architectures: $archs"
+          case "$archs" in
+            *${{ matrix.expect_arch }}*) ;;
+            *) echo "::error::expected ${{ matrix.expect_arch }}, got $archs"; exit 1 ;;
+          esac
+
+          # tkinterdnd2 ships one tkdnd build per platform. py2app copying only
+          # the .tcl files and leaving the macOS .dylib behind would disable
+          # drag & drop in the bundle — and the app catches that failure and
+          # carries on, so it would never surface as an error.
+          if [ -z "$(find "$APP/Contents/Resources" -path '*tkdnd/osx-*' -name '*.dylib' -print -quit)" ]; then
+            echo "::error::macOS tkdnd library missing — drag & drop would be dead in the bundle"
+            exit 1
+          fi
+
+          # CustomTkinter reads its theme JSON from inside its own package the
+          # first time a widget is built. If py2app leaves those out, the app
+          # imports cleanly and then dies the instant a window opens — which is
+          # exactly the failure `--check` alone cannot see.
+          if [ -z "$(find "$APP/Contents/Resources" -path '*customtkinter*' -name '*.json' -print -quit)" ]; then
+            echo "::error::CustomTkinter theme assets missing from the bundle"
+            exit 1
+          fi
+
+          "$BIN" --check
+
+      - name: Launch it and prove a window actually opens
         run: |
           APP="dist/WebP Studio.app"
-          test -d "$APP" || { echo "no bundle produced"; exit 1; }
-          file "$APP/Contents/MacOS/WebP Studio"
-          # Headless runners have no window server, so a full launch can't be
-          # tested here — confirm the embedded interpreter starts and imports.
-          "$APP/Contents/MacOS/WebP Studio" --check
+          BIN="$APP/Contents/MacOS/WebP Studio"
+
+          # `--check` only proves the interpreter imports. This is the step that
+          # would have caught a bundle that builds green and dies on double-click.
+          "$BIN" > launch.log 2>&1 &
+          PID=$!
+          sleep 25
+
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "::error::the app exited on its own — it crashed during startup"
+            echo "--- output ---"; cat launch.log
+            exit 1
+          fi
+
+          echo "still running after 25s"
+          screencapture -x window.png 2>/dev/null || echo "(no screencapture on this runner)"
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+          echo "--- output ---"; cat launch.log
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: launch-proof-${{ matrix.arch }}
+          path: |
+            window.png
+            launch.log
+          retention-days: 14
+          if-no-files-found: ignore
+
       - run: ditto -c -k --keepParent "dist/WebP Studio.app" "WebP-Studio-macOS-${{ matrix.arch }}.zip"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: WebP-Studio-macOS-${{ matrix.arch }}
           path: WebP-Studio-macOS-${{ matrix.arch }}.zip
-          retention-days: 14
+          # 14 days meant every build quietly disappeared and the download
+          # links in the README led to nothing. Tagged releases are the
+          # permanent copy; this is the ceiling GitHub allows for artifacts.
+          retention-days: 90
 
