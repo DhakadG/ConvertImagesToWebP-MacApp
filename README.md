@@ -223,8 +223,13 @@ python setup.py py2app     # -> dist/WebP Studio.app
 Drop an `assets/icon.icns` in first if you want a custom icon — unlike v1, the
 build no longer fails without one.
 
-**py2app bundles the interpreter it is run with, so the result is single-arch.**
-An app built on an M-series Mac will not launch on an Intel Mac and vice versa.
+**The result is single-arch, and not for the reason you would guess.** The
+launcher stub, the embedded `Python.framework` and `_tkinter.so` are all
+universal2 — `lipo -archs` on them reports `x86_64 arm64` on every runner. But
+pip installs *platform-specific wheels*, so Pillow's `_imaging`, `_webp`,
+`_avif` and `_imagingcms` are single-arch, and they are what the app imports on
+every single image. An Apple Silicon build therefore dies on an Intel Mac the
+moment it touches a photo.
 CI therefore builds both (`macos-15-intel`, `macos-14` Apple Silicon) and
 publishes them as separate downloads. For one universal binary instead, build
 with a universal2 python.org interpreter rather than a Homebrew one.
@@ -286,12 +291,18 @@ without a display.
 |---|---|
 | Windows 11 · Python 3.12 · Tk 8.6 · CustomTkinter 6.0 (`>=5.2.2` required) | both suites pass; app driven end to end |
 | Engine logic (any OS) | 15 checks, no display required |
-| macOS 14 (Apple Silicon), CI | GUI boot + real conversion pass; `.app` builds and its interpreter starts |
-| macOS (Intel), CI | `.app` builds on `macos-15-intel` |
+| macOS 14 (Apple Silicon), CI | GUI boot + real conversion pass; `.app` builds, launches and stays up |
+| macOS (Intel), CI | `.app` builds on `macos-15-intel`, launches and stays up |
 | Linux | should work; `test_gui_boot` needs `xvfb` in CI |
 
-Not covered anywhere: a human double-clicking the built `.app`. CI runners have
-no window server, so that last step is yours.
+CI now launches the built bundle and fails if it exits on its own, so a build
+that dies at startup cannot ship. It also checks the three things that break
+bundles silently: Pillow's architecture, CustomTkinter's theme JSON, and the
+macOS `tkdnd` dylib that drag & drop needs.
+
+Still not covered: a human double-clicking it and using it. `screencapture`
+returns nothing on the runners, so there is no screenshot to prove a window
+was drawn — only that the process was alive 25 seconds in.
 
 ## Contributing
 

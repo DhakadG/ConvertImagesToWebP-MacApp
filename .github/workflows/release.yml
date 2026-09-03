@@ -42,12 +42,23 @@ jobs:
           BIN="$APP/Contents/MacOS/WebP Studio"
           test -d "$APP" || { echo "::error::py2app produced no bundle"; exit 1; }
 
-          archs=$(lipo -archs "$BIN")
-          echo "architectures: $archs"
+          PILC=$(find "$APP/Contents/Resources" -name '_imaging.cpython-*-darwin.so' -print -quit)
+          test -n "$PILC" || { echo "::error::Pillow's _imaging module is not in the bundle"; exit 1; }
+          archs=$(lipo -archs "$PILC")
+          echo "Pillow _imaging architectures: $archs"
           case "$archs" in
             *${{ matrix.expect_arch }}*) ;;
             *) echo "::error::expected ${{ matrix.expect_arch }}, got $archs"; exit 1 ;;
           esac
+
+          # tkinterdnd2 ships one tkdnd build per platform. py2app copying only
+          # the .tcl files and leaving the macOS .dylib behind would disable
+          # drag & drop in the bundle — and the app catches that failure and
+          # carries on, so it would never surface as an error.
+          if [ -z "$(find "$APP/Contents/Resources" -path '*tkdnd/osx-*' -name '*.dylib' -print -quit)" ]; then
+            echo "::error::macOS tkdnd library missing — drag & drop would be dead in the bundle"
+            exit 1
+          fi
 
           if [ -z "$(find "$APP/Contents/Resources" -path '*customtkinter*' -name '*.json' -print -quit)" ]; then
             echo "::error::CustomTkinter theme assets missing from the bundle"
