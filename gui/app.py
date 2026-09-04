@@ -108,7 +108,10 @@ class App(_Window):
     def _set_theme(self, label: str) -> None:
         self.settings.theme = label.lower()
         t.apply_appearance(self.settings.theme)
-        self.settings.save()
+        try:
+            self.settings.save()
+        except OSError as exc:
+            print(f"could not save settings: {exc}", file=sys.stderr)
         # Rings are raw Canvas drawings; CustomTkinter can't repaint them for us.
         relayout_ring_colors(self)
 
@@ -196,7 +199,10 @@ class App(_Window):
                 thread.join(timeout=5.0)
         self.settings.window_width = self.winfo_width()
         self.settings.window_height = self.winfo_height()
-        self.settings.save()
+        try:
+            self.settings.save()
+        except OSError as exc:
+            print(f"could not save settings: {exc}", file=sys.stderr)
         self.destroy()
 
 

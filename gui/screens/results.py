@@ -158,7 +158,11 @@ class ResultsScreen(ctk.CTkFrame):
     # ------------------------------------------------------------------
     def open_output(self) -> None:
         folder = self.output_folder
-        if not folder or not folder.exists():
+        if not folder:
+            self.detail.append("\nNo output folder — nothing was written this run.")
+            return
+        if not folder.exists():
+            self.detail.append(f"\nOutput folder is gone: {folder}")
             return
         system = platform.system()
         if system == "Darwin":

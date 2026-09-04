@@ -36,7 +36,7 @@ OPTIONS = {
     },
     # tkinterdnd2 ships a Tcl extension that py2app only copies when the whole
     # package is included, not just the importable module.
-    "packages": ["customtkinter", "PIL", "tkinterdnd2", "gui", "core"],
+    "packages": ["customtkinter", "PIL", "tkinterdnd2", "pillow_heif", "gui", "core"],
     "includes": ["tkinter", "piexif"],
     # setuptools stays: py2app's own recipes import from it during the build,
     # and excluding it is a common cause of a bundle that dies on launch.

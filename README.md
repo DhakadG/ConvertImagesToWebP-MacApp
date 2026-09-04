@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml/badge.svg)](https://github.com/DhakadG/ConvertImagesToWebP-MacApp/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](requirements.txt)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](requirements.txt)
 
 Batch image converter for macOS, Windows and Linux. Drop a folder, pick a
 preset, get smaller images.
